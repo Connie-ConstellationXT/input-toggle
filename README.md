@@ -19,6 +19,42 @@ sudo python3 input-toggle.py --type 'Joystick / game controller'
 
 For NixOS, `nix-shell` in this folder provides Python, evdev, systemd tools, and `modprobe` for remapping.
 
+## Install from a NixOS flake
+
+Add this repository as an input in your system flake. For a local checkout:
+
+```nix
+inputs.input-toggle.url = "path:/home/conneh/actual/NIXOS HIVE/input-toggle";
+```
+
+Then accept `input-toggle` in `outputs`, include its module in `nixosSystem`, and enable it in your configuration. This uses NixOS system configuration only; Home Manager is not needed.
+
+```nix
+# flake.nix: add input-toggle alongside your other inputs
+outputs = { nixpkgs, input-toggle, ... }: {
+  nixosConfigurations.nixos = nixpkgs.lib.nixosSystem {
+    # ...
+modules = [
+  ./configuration.nix
+  input-toggle.nixosModules.default
+];
+  };
+};
+```
+
+```nix
+# configuration.nix
+programs.input-toggle.enable = true;
+```
+
+`nixos-rebuild switch --flake .#nixos` installs `input-toggle` system-wide and loads `uinput` at boot for virtual-controller remapping. To omit automatic `uinput` loading:
+
+```nix
+programs.input-toggle.enableUinput = false;
+```
+
+For a published repository, replace the local URL with `github:OWNER/input-toggle`. The package is also available directly as `inputs.input-toggle.packages.${pkgs.system}.default`.
+
 ## Features and uses
 
 | Feature | Use case |
@@ -26,7 +62,7 @@ For NixOS, `nix-shell` in this folder provides Python, evdev, systemd tools, and
 | Disable a driver | Hide the T-Rudder from a Unity game that treats pedals as unwanted camera input. Re-enable it later for Elite Dangerous. |
 | Root-only physical input | Keep a controller enabled while preventing ordinary applications from opening its individual input nodes. Original user/group permissions and ACLs can be restored. |
 | F710 replacement controller | Shadow the physical F710 and expose a virtual controller with SwapSticks, merged triggers, or both. |
-| T-Rudder replacement controller | Shadow the physical pedals and expose Yareli continuous throttle as a virtual controller. |
+| T-Rudder replacement controller | In Warframe, use the pedals as a smooth forward/backward analog stick for Yareli's Merulina K-Drive. |
 | Live discovery | Find a bound or unbound supported device after reconnecting or rebooting, without a hardcoded USB port or event number. |
 
 ## Controls
@@ -51,9 +87,9 @@ Disabling or restricting a keyboard, pointer, key interface, or unknown HID devi
 
 Search for `Thrustmaster`, select the T-Rudder, press Space, then `q`. Its `usbhid` interface is detached and the physical input nodes disappear. Reopen the app later and press Space to restore it.
 
-### Use Yareli continuous throttle from the T-Rudder
+### Use the T-Rudder for smooth Yareli K-Drive movement
 
-Search for `Thrustmaster`, select the T-Rudder, press `r`, then `1`. Input Toggle binds the current physical event node to Yareli, grabs it exclusively, and creates a virtual controller. The legacy `TRUDDER_PATH` in `Yareli_continuous_throttle.py` is overridden; an event-number change after reboot is safe.
+Yareli rides Merulina, which uses K-Drive movement controls. Search for `Thrustmaster`, select the T-Rudder, press `r`, then `1`. The pedal's continuous axis becomes the virtual controller's forward/backward left-stick axis, giving smooth movement instead of keyboard-style on/off input. The legacy `TRUDDER_PATH` in `Yareli_continuous_throttle.py` is overridden, so an event-number change after reboot is safe.
 
 Press `r`, then `0` to stop Yareli and leave the pedals disabled. Press `r`, then `e` to stop Yareli and restore native pedal input and saved access permissions.
 
