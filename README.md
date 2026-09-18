@@ -1,15 +1,15 @@
 # Input Toggle
 
-A curses terminal app for temporarily disabling USB input interfaces or restricting their input nodes to root. Supports USB HID (`usbhid`) and Xbox-compatible controllers (`xpad`), including the Thrustmaster T-Rudder and Logitech F710. The basic toggles require Linux and Python 3. Remapping also uses python-evdev, uinput, and systemd; local evdev copies are included, with a Nix shell for other Python versions.
+Terminal UI for managing game input devices on Linux. It finds devices by current USB identity and readable type, so changing `/dev/input/event*` numbers after a reboot does not require editing scripts.
 
-## Run
+## Start
 
 ```sh
 cd '/home/conneh/actual/NIXOS HIVE/input-toggle'
 sudo python3 input-toggle.py
 ```
 
-Enter your sudo password if prompted (nothing is displayed as you type). To start with a device search or type filter:
+Useful shortcuts:
 
 ```sh
 sudo python3 input-toggle.py --search Thrustmaster
@@ -17,123 +17,94 @@ sudo python3 input-toggle.py --search F710
 sudo python3 input-toggle.py --type 'Joystick / game controller'
 ```
 
-On NixOS, if Python is unavailable, run `nix-shell -p python3`, then `sudo "$(command -v python3)" input-toggle.py` from this folder.
+For NixOS, `nix-shell` in this folder provides Python, evdev, systemd tools, and `modprobe` for remapping.
+
+## Features and uses
+
+| Feature | Use case |
+| --- | --- |
+| Disable a driver | Hide the T-Rudder from a Unity game that treats pedals as unwanted camera input. Re-enable it later for Elite Dangerous. |
+| Root-only physical input | Keep a controller enabled while preventing ordinary applications from opening its individual input nodes. Original user/group permissions and ACLs can be restored. |
+| F710 replacement controller | Shadow the physical F710 and expose a virtual controller with SwapSticks, merged triggers, or both. |
+| T-Rudder replacement controller | Shadow the physical pedals and expose Yareli continuous throttle as a virtual controller. |
+| Live discovery | Find a bound or unbound supported device after reconnecting or rebooting, without a hardcoded USB port or event number. |
 
 ## Controls
 
 | Key | Action |
 | --- | --- |
-| Tab / Shift+Tab | Cycle readable device types |
-| / | Edit name, type, or USB ID search; Backspace deletes, Enter finishes |
+| Tab / Shift+Tab | Filter by readable device type |
+| / | Search name, type, USB ID, or interface ID |
 | Up / Down or j / k | Select an interface |
-| Space | Disable or enable the interface's driver |
-| p | Restrict input access to root, or restore saved permissions |
-| r | Choose a compatible replacement remapper, stop it, or return to native input |
-| q / Escape | Quit, leaving changes in place |
+| Space | Disable or enable its kernel driver |
+| p | Make physical input nodes root-only, or restore their saved permissions and ACLs |
+| r | Choose, change, or stop a compatible replacement remapper |
+| q / Escape | Quit; changes remain in effect |
 
-Disabling or restricting keyboards, pointers, key interfaces, and unknown HID types shows an extra confirmation with the device name, types, USB ID, and interface. **Only lowercase `y` confirms. Every other key cancels immediately.** Enabling or restoring permissions needs no extra confirmation. A terminal too small to show the warning cannot confirm it.
+Rows are green for enabled devices, red for disabled or root-only devices, and amber for a running replacement, mixed access, or an uncertain remapper state. Text labels remain useful in monochrome terminals.
 
-## Two ways to keep a controller out of a game
+Disabling or restricting a keyboard, pointer, key interface, or unknown HID device shows an explicit warning with its name and USB interface. Only lowercase `y` confirms; every other key cancels.
 
-**Disable the interface:** select the T-Rudder or F710, press **Space**, then **q**. The interface is detached from its driver, and its input nodes disappear. Play your game. Reopen the app and press **Space** to enable it before playing Elite Dangerous. The app discovers the current USB path rather than relying on a hardcoded port.
+## Common workflows
 
-**Keep it enabled, restrict access:** select an enabled device, press **p**, then **q**. The app saves each node's original owner, group, permission bits, and full POSIX access ACL before changing anything. It then makes the interface's individual `/dev/input/event*`, `js*`, and `mouse*` nodes root-owned with mode `0600`, removing extended ACL grants. This blocks non-root read **and write** access. Press **p** again after reopening the app to restore the exact saved permissions and ACLs, including user and group grants.
+### Keep T-Rudder out of a game
 
-Rows are **green** when enabled, **red** when disabled or root-only, and **amber** when shadowed by a running remapper. Amber shadowed rows include the profile name, such as `SHADOWED: SwapSticks`. Mixed permissions and uncertain remapper status also use amber, with explicit text. Terminals with only eight colors use yellow for amber; monochrome terminals retain the status labels.
+Search for `Thrustmaster`, select the T-Rudder, press Space, then `q`. Its `usbhid` interface is detached and the physical input nodes disappear. Reopen the app later and press Space to restore it.
 
-The selected row’s access details show `normal`, `root-only`, or `mixed`; `(saved)` means a permission snapshot is available. `unavailable` means an expected node cannot be inspected. The USB interface, driver, and node names also appear below the list.
+### Use Yareli continuous throttle from the T-Rudder
 
-Apply root-only access **before launching the game**. Permissions prevent new opens; they do not revoke already-open handles. Existing games, desktop input services, and programs with elevated privileges can still receive input. This is specifically a `/dev/input` permission change: it does not block raw USB, `/dev/hidraw`, or the shared `/dev/input/mice` aggregate. Use driver disabling when you need the interface removed altogether.
+Search for `Thrustmaster`, select the T-Rudder, press `r`, then `1`. Input Toggle binds the current physical event node to Yareli, grabs it exclusively, and creates a virtual controller. The legacy `TRUDDER_PATH` in `Yareli_continuous_throttle.py` is overridden; an event-number change after reboot is safe.
 
-Changes remain after quitting, Ctrl+C, or closing the terminal. Replugging, rebooting, or rebinding recreates device nodes with system defaults. Device management services such as udev/logind can also change permissions later; this app does not install persistent rules or a background enforcement service. Recheck the access column if that happens.
+Press `r`, then `0` to stop Yareli and leave the pedals disabled. Press `r`, then `e` to stop Yareli and restore native pedal input and saved access permissions.
 
-## Shadow a controller with a Python remapper
+### Use a remapped F710
 
-Put the F710’s switch in **X** (XInput) mode, then run:
+Put the F710 in XInput (`X`) mode. Search for `F710`, select it, then press `r`.
 
-```sh
-sudo python3 input-toggle.py --search F710
-```
-
-Select the F710 (enabled, root-only, or disabled) and press **r**:
-
-| Choice | Replacement |
+| Choice | Virtual controller |
 | --- | --- |
-| 1 | SwapSticks: swap left/right sticks, with an Xbox 360 virtual identity |
-| 2 | Merged triggers: one signed `ABS_MISC` axis, retaining the original stick layout |
-| 3 | SwapSticks + merged triggers |
-| 0 | Stop the replacement and leave the physical F710 disabled |
-| e | Stop the replacement and restore native input plus saved permissions |
+| 1 | SwapSticks |
+| 2 | Merged triggers into signed `ABS_MISC` |
+| 3 | SwapSticks plus merged triggers |
+| 0 | Stop remapping and leave the F710 disabled |
+| e | Stop remapping and restore native F710 input |
 
-Choose a profile, wait for the **amber SHADOWED** row, then press **q** and launch the game. Reopen the app and use **r** to switch profiles or stop remapping. **Space** on a shadowed row stops the replacement and disables the physical interface. Changing permissions with **p** is blocked while a replacement is active; use **r**, then **e**, to restore normal access.
+The menu starts the selected remapper as a transient systemd service. You can quit Input Toggle and launch a game; the amber `SHADOWED` entry shows that it remains active. Reopen Input Toggle to switch profile or stop it. F710 scripts also receive the current event node rather than their old hardcoded `DEVICE_PATH` value.
 
-The Python scripts need physical input events. If the F710 was unbound, the app rebinds `xpad`, waits for its input nodes, and restricts them to root. The selected script runs as root with an exclusive grab and creates a virtual controller whose event/joystick nodes are owned by the user who invoked sudo. Run the app using sudo from your normal user session so it knows which user should receive the virtual device.
+### Give root-only access to a device
 
-### T-Rudder: Yareli continuous throttle
+Select an enabled device and press `p` before opening the game. The app saves the original ownership, mode, and POSIX ACL of its individual `event*`, `js*`, and `mouse*` nodes, then makes them root-owned `0600`. Press `p` again to restore the saved access.
 
-The T-Rudder has its own compatible choice in the same **r** menu: **Yareli continuous throttle**. Select the T-Rudder—whether it is enabled, root-only, or disabled—press **r**, then press **1**. The app rebinds `usbhid` if necessary, shadows its selected event node, and creates the Yareli virtual controller. The physical pedals stay hidden from ordinary applications while the virtual controller receives the remapped throttle axis.
+This blocks new non-root opens only. It cannot revoke an input handle already opened by a game or desktop service, and it does not block raw USB, `hidraw`, or `/dev/input/mice`. Use Space when the physical device must disappear completely.
 
-The runner supplies the selected current event node to `Yareli_continuous_throttle.py`; its legacy `TRUDDER_PATH = "/dev/input/event7"` setting is not used by the managed remapper. This means USB reconnects and changing event numbers do not require editing that script. Use **r** then **0** to stop and leave the T-Rudder disabled, or **r** then **e** to stop and restore native pedal input.
+## Persistence and recovery
 
-Each remapper runs as a transient systemd service, identified by the current USB connection. Closing the app or terminal leaves it running. Reopening the app checks the live service rather than trusting a remembered PID. The service reports ready only after grabbing the source and creating an accessible virtual output. Startup failures attempt to return the physical controller to its prior disabled/access state. Switching profiles destroys the old virtual controller and creates a new one; relaunch games that do not handle this well.
+Driver and access changes survive quitting the UI. Replugging, rebinding, and rebooting recreate device nodes with normal system defaults. Remappers stop at reboot or unplug; start a profile again after boot.
 
-Remappers do not auto-restart after failure, unplugging, or reboot. A failed remapper releases its grab; existing physical-device handles may receive input again, while the saved root-only permissions still block new non-root opens. The row stops claiming it is shadowed. Reopen the app to start a profile again or restore native access. The copied profiles do not implement force feedback.
-
-Source scripts, their local helpers, dependency metadata, and evdev 1.9.2 (including its license) were copied into [`remappers/mergetriggers/`](remappers/mergetriggers/). The original project was left unchanged. The runner supplies the selected event path, so its operation does not depend on the scripts’ old hardcoded event numbers. Yareli is the T-Rudder menu profile; diagnostic scripts are source references only.
-
-Bundled evdev extensions are for Linux x86-64 CPython 3.12 and 3.13. A matching installed evdev is preferred; otherwise the runner uses the matching bundled copy. For a different interpreter, use the provided Nix shell:
+Temporary recovery records live in `/run/input-toggle/` until reboot. Do not remove `access.json` while a device is root-only: it contains the original ACLs needed for exact restoration.
 
 ```sh
-nix-shell
-sudo "$(command -v python3)" input-toggle.py --search F710
+# Restore interfaces the app detached
+sudo python3 input-toggle.py --restore
+
+# Restore saved input-node permissions and ACLs
+sudo python3 input-toggle.py --restore-access
+
+# Browse without changing anything
+python3 input-toggle.py --list
 ```
 
-Or install `remappers/mergetriggers/requirements.txt` in a virtual environment and launch the app with that environment’s Python. Root-only/driver toggles still work without evdev. The app loads the `uinput` kernel module on remapper startup if needed; it does not install permanent system services or udev rules.
+Stop a replacement using `r` before running either bulk recovery command. If a remapper fails, it releases its exclusive grab; its saved root-only permissions still block new normal-user opens until restored.
 
-For service diagnostics:
+## Included remappers
+
+`remappers/mergetriggers/` contains copied Mergetriggers source scripts, their helpers, requirements, and evdev 1.9.2 copies for CPython 3.12/3.13 on Linux x86-64. The original source project was left unchanged. `remappers/runner.py` supplies the selected device’s live event node, validates its USB identity, grabs physical input, and creates the virtual output.
+
+For a different Python version or architecture, use `nix-shell` or install `remappers/mergetriggers/requirements.txt` into the Python environment used to start Input Toggle.
+
+If a remapper does not start, inspect its transient service:
 
 ```sh
 sudo systemctl list-units --all 'input-toggle-remap-*'
 sudo journalctl -u 'input-toggle-remap-*' -n 80 --no-pager
 ```
-
-Stop remappers through **r** before using the bulk recovery commands below. If you manually stop a service with systemctl, its physical input remains root-only; reopen the app and press **p** to restore its saved permissions.
-
-## Discovery and recovery
-
-Discovery reads current USB descriptors and driver bindings on every refresh. Bound `usbhid` and `xpad` interfaces are listed. Unbound HID interfaces and the F710's XInput interface can be found without saved state. Other previously disabled `xpad` interfaces use the recorded driver when available. “Disabled” means no interface driver is attached; the app cannot determine why.
-
-The F710 in XInput mode uses `xpad`, with input nodes directly below the USB interface. Both that layout and HID's nested input layout are supported. The device is recognized as a joystick/game controller in either supported mode.
-
-Records live in `/run/input-toggle/` and survive app restarts until reboot:
-
-- `state.json` caches names/types and remembers interfaces detached by this app. Live discovery and individual HID/F710 re-enabling work without it. Without cached tags, some unbound devices appear as `Other HID`.
-- `access.json` stores original node permissions and ACLs. **Keep this file until you restore access.** Original permissions cannot be reconstructed statelessly after they have been overwritten. If records are missing, unplug/reconnect to obtain your system's default permissions. Corrupt permission records are reported rather than silently overwritten.
-
-Explicit recovery commands, run from this folder:
-
-```sh
-# Re-enable interfaces recorded as disabled by this app:
-sudo python3 input-toggle.py --restore
-
-# Restore recorded input-node permissions and ACLs:
-sudo python3 input-toggle.py --restore-access
-```
-
-Restoration checks USB connection identity, sysfs input paths, and node identity to avoid applying an old snapshot to another device. Removed or replaced nodes are skipped. Failed permission changes attempt rollback; failed restorations retain their snapshot for retry. Only one privileged instance runs at a time.
-
-Run without sudo to browse, or list devices as plain text:
-
-```sh
-python3 input-toggle.py --list
-```
-
-## Tests
-
-```sh
-python3 -m unittest discover -s tests -v
-```
-
-Hardware remapping is intended to be checked in your own shell. Existing tests use simulated USB devices and temporary files. Permission tests exercise real mode and POSIX ACL changes on temporary files, with device-type checks and ownership changes mocked; they never change your hardware.
-
-Implementation references: [USB interface unbinding](https://cdn.kernel.org/doc/html/latest/driver-api/usb/power-management.html), [USB sysfs ABI](https://github.com/torvalds/linux/blob/master/Documentation/ABI/testing/sysfs-bus-usb), [xpad's F710 entry](https://github.com/torvalds/linux/blob/master/drivers/input/joystick/xpad.c), and [POSIX ACL permission semantics](https://man7.org/linux/man-pages/man5/acl.5.html).
