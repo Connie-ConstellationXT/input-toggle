@@ -1,4 +1,4 @@
-"""Manage F710 remappers as transient system services that outlive the TUI."""
+"""Manage controller remappers as transient system services that outlive the TUI."""
 import hashlib
 import json
 import os
@@ -11,15 +11,20 @@ import time
 ROOT = Path(__file__).resolve().parent
 RUNNER = ROOT / 'remappers' / 'runner.py'
 PROFILES = {
-    'swapsticks': ('SwapSticks', 'gamepad_daemon_swapsticks.py'),
-    'merged-triggers': ('Merged triggers', 'gamepad_daemon.py'),
-    'swapsticks-triggers': ('SwapSticks + merged triggers', 'gamepad_daemon_swapsticks_and_triggerz.py'),
+    'swapsticks': ('SwapSticks', 'gamepad_daemon_swapsticks.py', ('046d', 'c21f'), 'DEVICE_PATH'),
+    'merged-triggers': ('Merged triggers', 'gamepad_daemon.py', ('046d', 'c21f'), 'DEVICE_PATH'),
+    'swapsticks-triggers': ('SwapSticks + merged triggers', 'gamepad_daemon_swapsticks_and_triggerz.py', ('046d', 'c21f'), 'DEVICE_PATH'),
+    'yareli-throttle': ('Yareli continuous throttle', 'Yareli_continuous_throttle.py', ('044f', 'b679'), 'TRUDDER_PATH'),
 }
 
 
+def profiles_for(device):
+    identity = tuple(device['identity'][:2])
+    return [key for key, profile in PROFILES.items() if profile[2] == identity]
+
+
 def supported(device):
-    # These mappings expect the signed sticks and 0..255 triggers of XInput mode.
-    return device['identity'][:2] == ['046d', 'c21f']
+    return bool(profiles_for(device))
 
 
 def service_name(device):
@@ -59,12 +64,14 @@ class RemapperController:
                  '--property=Description', '--property=LoadState'],
                 capture_output=True, text=True, timeout=2)
         except (OSError, subprocess.TimeoutExpired):
-            return {'state': 'unknown', 'label': 'remap status unavailable'}
+            # No usable system manager means this app could not have started a
+            # managed replacement in the current environment.
+            return None
         properties = dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
         if properties.get('LoadState') == 'not-found':
             return None
         if result.returncode:
-            return {'state': 'unknown', 'label': 'remap status unavailable'}
+            return None
         description = properties.get('Description', '')
         if not description.startswith('Input Toggle remapper: '):
             return None
@@ -88,8 +95,8 @@ class RemapperController:
 
     def start(self, device, profile):
         self.require_root()
-        if not supported(device) or profile not in PROFILES:
-            raise RuntimeError('Choose an F710 in XInput mode and a listed remapper.')
+        if profile not in profiles_for(device):
+            raise RuntimeError('That replacement is not compatible with this controller.')
         if not shutil.which('systemd-run') or not shutil.which('systemctl'):
             raise RuntimeError('Remapping requires systemd-run and systemctl.')
         # Check imports and uinput before stopping an existing working remapper.
@@ -112,10 +119,10 @@ class RemapperController:
                 if events:
                     break
                 if time.monotonic() >= deadline:
-                    raise RuntimeError('No F710 event node appeared after enabling the driver.')
+                    raise RuntimeError('No controller event node appeared after enabling the driver.')
                 time.sleep(0.1)
             if len(events) != 1:
-                raise RuntimeError('Expected one F710 event node; refusing to select an ambiguous source.')
+                raise RuntimeError('Expected one controller event node; refusing to select an ambiguous source.')
             # Let udev finish its initial ownership/ACL setup before taking the snapshot.
             if shutil.which('udevadm'):
                 command(['udevadm', 'settle', '--timeout=3'], timeout=4)

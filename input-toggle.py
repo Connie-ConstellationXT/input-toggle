@@ -14,7 +14,7 @@ import stat
 import sys
 import textwrap
 
-from remapping import PROFILES, RemapperController, supported as remapping_supported
+from remapping import PROFILES, RemapperController, profiles_for, supported as remapping_supported
 
 USB = Path('/sys/bus/usb/devices')
 DRIVER = Path('/sys/bus/usb/drivers/usbhid')
@@ -456,8 +456,8 @@ def row_state(device, access_status, shadow):
 
 def choose_remapper(screen, device):
     if not remapping_supported(device):
-        raise RuntimeError('Remapping is available for the F710 in XInput (X switch) mode.')
-    options = list(PROFILES)
+        raise RuntimeError('No replacement profiles are available for this controller.')
+    options = profiles_for(device)
     screen.timeout(-1)
     try:
         while True:
@@ -465,7 +465,7 @@ def choose_remapper(screen, device):
             screen.erase()
             fits = height >= 15 and width >= 65
             if fits:
-                lines = ['F710 REPLACEMENT DRIVER', device['name'],
+                lines = ['REPLACEMENT DRIVER', device['name'],
                          'The physical driver stays bound, with input restricted to root.',
                          'The remapper grabs it and supplies a virtual controller.', '',
                          *[f'{index}. {PROFILES[key][0]}' for index, key in enumerate(options, 1)],

@@ -28,7 +28,7 @@ On NixOS, if Python is unavailable, run `nix-shell -p python3`, then `sudo "$(co
 | Up / Down or j / k | Select an interface |
 | Space | Disable or enable the interface's driver |
 | p | Restrict input access to root, or restore saved permissions |
-| r | Choose an F710 replacement remapper, stop it, or return to native input |
+| r | Choose a compatible replacement remapper, stop it, or return to native input |
 | q / Escape | Quit, leaving changes in place |
 
 Disabling or restricting keyboards, pointers, key interfaces, and unknown HID types shows an extra confirmation with the device name, types, USB ID, and interface. **Only lowercase `y` confirms. Every other key cancels immediately.** Enabling or restoring permissions needs no extra confirmation. A terminal too small to show the warning cannot confirm it.
@@ -47,7 +47,7 @@ Apply root-only access **before launching the game**. Permissions prevent new op
 
 Changes remain after quitting, Ctrl+C, or closing the terminal. Replugging, rebooting, or rebinding recreates device nodes with system defaults. Device management services such as udev/logind can also change permissions later; this app does not install persistent rules or a background enforcement service. Recheck the access column if that happens.
 
-## Shadow the F710 with a Python remapper
+## Shadow a controller with a Python remapper
 
 Put the F710’s switch in **X** (XInput) mode, then run:
 
@@ -69,11 +69,17 @@ Choose a profile, wait for the **amber SHADOWED** row, then press **q** and laun
 
 The Python scripts need physical input events. If the F710 was unbound, the app rebinds `xpad`, waits for its input nodes, and restricts them to root. The selected script runs as root with an exclusive grab and creates a virtual controller whose event/joystick nodes are owned by the user who invoked sudo. Run the app using sudo from your normal user session so it knows which user should receive the virtual device.
 
+### T-Rudder: Yareli continuous throttle
+
+The T-Rudder has its own compatible choice in the same **r** menu: **Yareli continuous throttle**. Select the T-Rudder—whether it is enabled, root-only, or disabled—press **r**, then press **1**. The app rebinds `usbhid` if necessary, shadows its selected event node, and creates the Yareli virtual controller. The physical pedals stay hidden from ordinary applications while the virtual controller receives the remapped throttle axis.
+
+The runner supplies the selected current event node to `Yareli_continuous_throttle.py`; its legacy `TRUDDER_PATH = "/dev/input/event7"` setting is not used by the managed remapper. This means USB reconnects and changing event numbers do not require editing that script. Use **r** then **0** to stop and leave the T-Rudder disabled, or **r** then **e** to stop and restore native pedal input.
+
 Each remapper runs as a transient systemd service, identified by the current USB connection. Closing the app or terminal leaves it running. Reopening the app checks the live service rather than trusting a remembered PID. The service reports ready only after grabbing the source and creating an accessible virtual output. Startup failures attempt to return the physical controller to its prior disabled/access state. Switching profiles destroys the old virtual controller and creates a new one; relaunch games that do not handle this well.
 
 Remappers do not auto-restart after failure, unplugging, or reboot. A failed remapper releases its grab; existing physical-device handles may receive input again, while the saved root-only permissions still block new non-root opens. The row stops claiming it is shadowed. Reopen the app to start a profile again or restore native access. The copied profiles do not implement force feedback.
 
-Source scripts, their local helpers, dependency metadata, and evdev 1.9.2 (including its license) were copied into [`remappers/mergetriggers/`](remappers/mergetriggers/). The original project was left unchanged. The runner supplies the selected event path, so its operation does not depend on the scripts’ old hardcoded event numbers. The unrelated T-Rudder/Yareli and diagnostic scripts are included as source references, but are not F710 menu choices.
+Source scripts, their local helpers, dependency metadata, and evdev 1.9.2 (including its license) were copied into [`remappers/mergetriggers/`](remappers/mergetriggers/). The original project was left unchanged. The runner supplies the selected event path, so its operation does not depend on the scripts’ old hardcoded event numbers. Yareli is the T-Rudder menu profile; diagnostic scripts are source references only.
 
 Bundled evdev extensions are for Linux x86-64 CPython 3.12 and 3.13. A matching installed evdev is preferred; otherwise the runner uses the matching bundled copy. For a different interpreter, use the provided Nix shell:
 

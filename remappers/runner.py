@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a copied Mergetriggers profile on the exact selected F710 interface."""
+"""Run a copied profile on the exact selected controller interface."""
 import argparse
 import importlib
 import importlib.util
@@ -59,7 +59,8 @@ def main():
     if app.identity(source) != expected_identity or args.event not in app.input_files(source):
         raise RuntimeError('Source controller changed before the remapper started.')
     evpath = app.DEV_INPUT / args.event
-    spec = importlib.util.spec_from_file_location('selected_profile', SCRIPTS / PROFILES[args.profile][1])
+    label, script, expected_usb_id, path_variable = PROFILES[args.profile]
+    spec = importlib.util.spec_from_file_location('selected_profile', SCRIPTS / script)
     profile = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(profile)
     opened = []
@@ -74,8 +75,8 @@ def main():
         expected_dev = app.read(app.node_sysfs(source, args.event) / 'dev')
         if expected_dev != f'{os.major(info.st_rdev)}:{os.minor(info.st_rdev)}':
             raise RuntimeError('Physical input node changed.')
-        if device.info.vendor != 0x046d or device.info.product != 0xc21f:
-            raise RuntimeError('Selected input is not the F710 in XInput mode.')
+        if (device.info.vendor, device.info.product) != tuple(int(value, 16) for value in expected_usb_id):
+            raise RuntimeError('Selected input does not match the chosen replacement profile.')
         device.grab()
         return device
 
@@ -112,7 +113,7 @@ def main():
                 address = '\0' + address[1:]
             with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as notify:
                 notify.sendto(b'READY=1\nSTATUS=Physical controller grabbed; virtual output ready', address)
-        print(f'Shadowing {evpath} with {PROFILES[args.profile][0]} for UID {args.uid}', flush=True)
+        print(f'Shadowing {evpath} with {label} for UID {args.uid}', flush=True)
         return output
 
     def stop(signum, frame):
@@ -120,7 +121,7 @@ def main():
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    profile.DEVICE_PATH = str(evpath)
+    setattr(profile, path_variable, str(evpath))
     profile.InputDevice = physical_device
     profile.UInput = virtual_device
     try:
