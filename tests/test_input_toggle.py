@@ -1,6 +1,7 @@
 import importlib.util
 from pathlib import Path
 import tempfile
+import struct
 import unittest
 from unittest.mock import patch, Mock
 
@@ -158,6 +159,142 @@ class DeviceTests(unittest.TestCase):
         (self.driver / 'bind').mkdir()
         self.assertEqual(len(self.controller.restore_all()), 1)
         self.assertIn('1-2:1.0', m.Controller().saved)
+
+
+    def setup_access(self):
+        dev = Path(self.temp.name) / 'dev-input'
+        dev.mkdir()
+        self.dev = dev
+        for name in ('event7', 'js1'):
+            node = self.interface / 'input/input50' / name
+            node.mkdir(parents=True)
+            (node / 'dev').write_text('0:0')  # Regular files stand in for character devices.
+            (dev / name).touch()
+            (dev / name).chmod(0o660)
+        for obj, key, value in [(m, 'DEV_INPUT', dev), (m.stat, 'S_ISCHR', lambda mode: True)]:
+            patcher = patch.object(obj, key, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        patcher = patch.object(m.os, 'fchown')  # Tests never change real ownership.
+        self.chown = patcher.start()
+        self.addCleanup(patcher.stop)
+        self.access = m.AccessController()
+        return m.scan()[0]
+
+    def test_f710_xpad_discovery_disable_and_stateless_rebind(self):
+        parent = self.interface.parent
+        for key, value in {'idVendor': '046d', 'idProduct': 'c21f', 'product': 'Logitech Gamepad F710'}.items():
+            (parent / key).write_text(value)
+        (self.interface / 'bInterfaceClass').write_text('ff')
+        (self.interface / 'bInterfaceNumber').write_text('00')
+        (self.interface / 'driver').unlink()
+        xpad = self.driver.parent / 'xpad'
+        xpad.mkdir()
+        (self.interface / 'driver').symlink_to(xpad)
+        node = self.interface / 'input/input25/event25'
+        node.mkdir(parents=True)
+        (node.parent / 'name').write_text('Logitech Gamepad F710')
+        device = m.scan()[0]
+        self.assertEqual(device['nodes'], ['event25'])
+        self.assertEqual(device['driver'], 'xpad')
+        self.assertIn('Joystick / game controller', device['types'])
+        self.controller.toggle(device)
+        self.assertEqual((xpad / 'unbind').read_text(), device['id'])
+        (self.interface / 'driver').unlink()
+        m.STATE.unlink()
+        device = m.scan()[0]
+        self.assertTrue(device['disabled'])
+        m.Controller().toggle(device)
+        self.assertEqual((xpad / 'bind').read_text(), device['id'])
+        self.assertFalse((self.driver / 'bind').exists())
+
+    def test_permission_roundtrip_preserves_real_posix_acl(self):
+        device = self.setup_access()
+        entries = [(1, 6, 0xffffffff), (2, 6, m.os.getuid()), (4, 4, 0xffffffff),
+                   (16, 6, 0xffffffff), (32, 0, 0xffffffff)]
+        acl = struct.pack('<I', 2) + b''.join(struct.pack('<HHI', *entry) for entry in entries)
+        path = self.dev / 'event7'
+        m.os.setxattr(path, 'system.posix_acl_access', acl)
+        self.access.toggle(device)
+        for name in device['nodes']:
+            self.assertEqual(m.stat.S_IMODE((self.dev / name).stat().st_mode), 0o600)
+        fd = m.os.open(path, m.os.O_RDONLY)
+        try:
+            self.assertIsNone(m.acl_bytes(fd))
+        finally:
+            m.os.close(fd)
+        self.assertTrue(any(call.args[1:] == (0, -1) for call in self.chown.call_args_list))
+        reopened = m.AccessController()
+        self.assertTrue(reopened.tracked(device))
+        reopened.toggle(device)
+        self.assertEqual(m.os.getxattr(path, 'system.posix_acl_access'), acl)
+        self.assertEqual(m.stat.S_IMODE(path.stat().st_mode), 0o660)
+        self.assertEqual(m.stat.S_IMODE((self.dev / 'js1').stat().st_mode), 0o660)
+        self.assertEqual(m.AccessController().saved, {})
+
+    def test_permission_failure_rolls_back_all_nodes(self):
+        device = self.setup_access()
+        original = m.os.fchmod
+        def fail_second(fd, mode):
+            if mode == 0o600 and m.os.fstat(fd).st_ino == (self.dev / 'js1').stat().st_ino:
+                raise OSError('simulated failure')
+            return original(fd, mode)
+        with patch.object(m.os, 'fchmod', side_effect=fail_second):
+            with self.assertRaisesRegex(OSError, 'simulated failure'):
+                self.access.toggle(device)
+        self.assertEqual(m.AccessController().saved, {})
+        for name in device['nodes']:
+            self.assertEqual(m.stat.S_IMODE((self.dev / name).stat().st_mode), 0o660)
+
+    def test_restore_failure_keeps_permission_snapshot(self):
+        device = self.setup_access()
+        self.access.toggle(device)
+        with patch.object(self.access, 'restore_fd', side_effect=OSError('failed')):
+            self.assertEqual(len(self.access.restore_all()), 1)
+        self.assertTrue(m.AccessController().tracked(device))
+
+    def test_permissions_never_restore_onto_reused_node(self):
+        device = self.setup_access()
+        self.access.toggle(device)
+        (self.dev / 'event7').rename(self.dev / 'old-event7')
+        (self.dev / 'event7').touch(mode=0o640)
+        self.access.toggle(device)
+        self.assertEqual(m.stat.S_IMODE((self.dev / 'event7').stat().st_mode), 0o640)
+
+    def test_permissions_reject_symlink_without_mutation(self):
+        device = self.setup_access()
+        (self.dev / 'js1').unlink()
+        (self.dev / 'js1').symlink_to(self.dev / 'event7')
+        with self.assertRaises(OSError):
+            self.access.toggle(device)
+        self.assertFalse(self.access.path.exists())
+        self.assertEqual(m.stat.S_IMODE((self.dev / 'event7').stat().st_mode), 0o660)
+
+    def test_permissions_keyboard_requires_confirmation(self):
+        device = self.setup_access()
+        device['types'] = ['Keyboard']
+        with self.assertRaisesRegex(RuntimeError, 'confirmation'):
+            self.access.toggle(device)
+        self.access.toggle(device, confirmed=True)
+        self.assertTrue(self.access.tracked(device))
+        self.access.toggle(device)  # Restoration never needs confirmation.
+        self.assertFalse(self.access.tracked(device))
+
+    def test_permission_state_corruption_not_overwritten(self):
+        self.setup_access()
+        self.access.path.write_text('broken json')
+        with self.assertRaisesRegex(RuntimeError, 'preserve it'):
+            m.AccessController()
+        self.assertEqual(self.access.path.read_text(), 'broken json')
+
+    def test_explicit_restore_access_command(self):
+        device = self.setup_access()
+        self.access.toggle(device)
+        with patch.object(m.sys, 'argv', ['input-toggle.py', '--restore-access']), \
+                patch.object(m.signal, 'signal'):
+            self.assertEqual(m.main(), 0)
+        self.assertEqual(m.AccessController().saved, {})
+        self.assertEqual(m.stat.S_IMODE((self.dev / 'js1').stat().st_mode), 0o660)
 
 
 if __name__ == '__main__':
